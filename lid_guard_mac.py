@@ -133,8 +133,7 @@ def maybe_connect_hotspot():
     if not ssid:
         log.warning("Hotspot enabled in config but no SSID set — run: python3 run.py --setup")
         return
-    password = cfg_module.keychain_load_password()
-    connect_hotspot(ssid, password)
+    connect_hotspot(ssid, password=None)  # macOS uses its own saved Wi-Fi credentials
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ import json
 import subprocess
 import sys
 import logging
-import getpass
 from pathlib import Path
 
 log = logging.getLogger("lid-guard.config")
@@ -95,64 +94,6 @@ def _wifi_interface() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Keychain (macOS only)
-# ---------------------------------------------------------------------------
-
-_KEYCHAIN_SERVICE = "lid-guard"
-_KEYCHAIN_ACCOUNT = "hotspot-password"
-
-
-def keychain_save_password(password: str) -> bool:
-    if sys.platform != "darwin":
-        return False
-    try:
-        subprocess.run(
-            ["security", "delete-generic-password",
-             "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT],
-            capture_output=True,
-        )
-        result = subprocess.run(
-            ["security", "add-generic-password",
-             "-s", _KEYCHAIN_SERVICE,
-             "-a", _KEYCHAIN_ACCOUNT,
-             "-w", password],
-            capture_output=True,
-        )
-        return result.returncode == 0
-    except Exception as e:
-        log.error("Keychain save failed: %s", e)
-        return False
-
-
-def keychain_load_password() -> str | None:
-    if sys.platform != "darwin":
-        return None
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", _KEYCHAIN_SERVICE,
-             "-a", _KEYCHAIN_ACCOUNT,
-             "-w"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except Exception as e:
-        log.error("Keychain load failed: %s", e)
-    return None
-
-
-def keychain_delete_password():
-    if sys.platform != "darwin":
-        return
-    subprocess.run(
-        ["security", "delete-generic-password",
-         "-s", _KEYCHAIN_SERVICE, "-a", _KEYCHAIN_ACCOUNT],
-        capture_output=True,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Setup wizard
 # ---------------------------------------------------------------------------
 
@@ -173,7 +114,6 @@ def run_setup():
     if enabled:
         ssid = _pick_hotspot_ssid(cfg["hotspot"].get("ssid", ""))
         cfg["hotspot"]["ssid"] = ssid
-        _configure_password(ssid)
         print(f"\n  Hotspot set to: {ssid!r}")
     else:
         print("\n  Hotspot auto-connect: off")
@@ -210,36 +150,6 @@ def _pick_hotspot_ssid(current_ssid: str) -> str:
             name = input("  Hotspot name: ").strip()
             if name:
                 return name
-
-
-def _configure_password(ssid: str):
-    """Ask for the hotspot password and save it to Keychain."""
-    existing = keychain_load_password()
-
-    if existing:
-        print(f"\n  A password is already saved in Keychain for this setup.")
-        change = _prompt_bool("  Update the password?", False)
-        if not change:
-            return
-
-    print(f"\n  Enter the password for {ssid!r}.")
-    print("  (It will be stored in macOS Keychain — not in any file.)\n")
-
-    while True:
-        password = getpass.getpass("  Password (Enter to skip): ").strip()
-        if not password:
-            if not existing:
-                print("  No password saved — will only connect if SSID is already in Known Networks.")
-            return
-        confirm = getpass.getpass("  Confirm password: ").strip()
-        if password == confirm:
-            break
-        print("  Passwords don't match, try again.\n")
-
-    if keychain_save_password(password):
-        print("  Password saved to Keychain.")
-    else:
-        print("  Warning: could not save to Keychain.")
 
 
 # ---------------------------------------------------------------------------
