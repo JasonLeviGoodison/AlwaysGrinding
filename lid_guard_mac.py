@@ -222,7 +222,7 @@ class LidGuard:
 
         log.info(
             "lid-guard is running.\n"
-            "  Watching for: claude, openclaw\n"
+            "  Watching for: claude, openclaw, codex\n"
             "  Active  → lid close locks screen, Mac stays awake\n"
             "  Inactive → lid close sleeps normally\n"
             "  Ctrl-C / SIGTERM to exit\n"

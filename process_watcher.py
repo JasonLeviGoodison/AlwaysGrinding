@@ -18,6 +18,7 @@ log = logging.getLogger("lid-guard.procs")
 WATCHED_PROCESSES = [
     "claude",       # Claude Code CLI
     "openclaw",     # OpenClaw
+    "codex",        # OpenAI Codex CLI
 ]
 
 
