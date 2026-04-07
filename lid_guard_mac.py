@@ -24,6 +24,7 @@ import logging
 import threading
 
 from process_watcher import ProcessWatcher
+import config as cfg_module
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +69,72 @@ def lock_screen() -> bool:
 
     log.error("Could not lock screen on macOS")
     return False
+
+
+# ---------------------------------------------------------------------------
+# Hotspot auto-connect
+# ---------------------------------------------------------------------------
+
+def _wifi_interface() -> str:
+    """Return the active Wi-Fi interface name (e.g. 'en0')."""
+    try:
+        result = subprocess.run(
+            ["networksetup", "-listallhardwareports"],
+            capture_output=True, text=True, timeout=5,
+        )
+        lines = result.stdout.splitlines()
+        for i, line in enumerate(lines):
+            if "Wi-Fi" in line or "AirPort" in line:
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    if lines[j].startswith("Device:"):
+                        return lines[j].split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return "en0"  # sensible default
+
+
+def connect_hotspot(ssid: str, password: str | None) -> bool:
+    """Connect to the given Wi-Fi SSID (hotspot)."""
+    iface = _wifi_interface()
+    log.info("Connecting to hotspot %r via %s …", ssid, iface)
+
+    cmd = ["networksetup", "-setairportnetwork", iface, ssid]
+    if password:
+        cmd.append(password)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if result.returncode == 0:
+            log.info("Connected to hotspot %r", ssid)
+            return True
+        else:
+            # returncode 1 with no stderr usually means "already connected" on some macOS versions
+            stderr = result.stderr.strip()
+            if not stderr:
+                log.info("Hotspot join returned non-zero but no error — may already be connected")
+                return True
+            log.warning("Hotspot connect failed: %s", stderr)
+            return False
+    except subprocess.TimeoutExpired:
+        log.warning("Hotspot connect timed out")
+        return False
+    except Exception as e:
+        log.error("Hotspot connect error: %s", e)
+        return False
+
+
+def maybe_connect_hotspot():
+    """Connect to hotspot if configured and enabled."""
+    cfg = cfg_module.load()
+    hotspot = cfg.get("hotspot", {})
+    if not hotspot.get("enabled"):
+        return
+    ssid = hotspot.get("ssid", "").strip()
+    if not ssid:
+        log.warning("Hotspot enabled in config but no SSID set — run: python3 run.py --setup")
+        return
+    password = cfg_module.keychain_load_password()
+    connect_hotspot(ssid, password)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +260,8 @@ class LidGuard:
 
     def _handle_lid_close(self):
         if self._caffeinate.active:
-            log.info("Lid CLOSED and protection is ACTIVE — locking screen")
+            log.info("Lid CLOSED and protection is ACTIVE — connecting hotspot then locking screen")
+            maybe_connect_hotspot()
             lock_screen()
         else:
             log.info("Lid CLOSED but no watched process running — letting Mac sleep")
