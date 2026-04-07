@@ -8,7 +8,6 @@ Keychain:    service="lid-guard", account="hotspot-password"
 import json
 import subprocess
 import sys
-import time
 import logging
 import getpass
 from pathlib import Path
@@ -24,9 +23,6 @@ DEFAULTS = {
         "ssid": "",
     }
 }
-
-# airport binary (removed in macOS Sonoma but still present on older versions)
-_AIRPORT = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
 
 
 # ---------------------------------------------------------------------------
@@ -64,48 +60,7 @@ def _deep_merge(base: dict, override: dict):
 # ---------------------------------------------------------------------------
 
 def scan_wifi_networks() -> list[str]:
-    """
-    Return a list of nearby Wi-Fi SSIDs, sorted by signal strength.
-
-    Tries `airport -s` first (macOS < Sonoma), then falls back to
-    `networksetup -listpreferredwirelessnetworks` (saved networks).
-    """
-    ssids = _scan_via_airport()
-    if ssids:
-        return ssids
-    return _scan_via_networksetup()
-
-
-def _scan_via_airport() -> list[str]:
-    """Use the airport binary to scan for live nearby networks."""
-    try:
-        result = subprocess.run(
-            [_AIRPORT, "-s"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            return []
-
-        ssids = []
-        seen = set()
-        # airport output: header line then one network per line
-        # columns: SSID  BSSID  RSSI  CHANNEL  HT  CC  SECURITY
-        # SSID is right-aligned in a fixed-width field — everything before the BSSID (MAC addr)
-        for line in result.stdout.splitlines()[1:]:  # skip header
-            # MAC address pattern marks where SSID ends
-            parts = line.rsplit(None, 6)  # split from right
-            if len(parts) >= 7:
-                ssid = parts[0].strip()
-                if ssid and ssid not in seen:
-                    seen.add(ssid)
-                    ssids.append(ssid)
-        return ssids
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-        return []
-
-
-def _scan_via_networksetup() -> list[str]:
-    """Fallback: list networks already saved in macOS preferred network list."""
+    """Return saved Wi-Fi networks from macOS preferred network list."""
     try:
         iface = _wifi_interface()
         result = subprocess.run(
@@ -113,7 +68,7 @@ def _scan_via_networksetup() -> list[str]:
             capture_output=True, text=True, timeout=5,
         )
         ssids = []
-        for line in result.stdout.splitlines()[1:]:  # skip header
+        for line in result.stdout.splitlines()[1:]:  # skip header line
             ssid = line.strip()
             if ssid:
                 ssids.append(ssid)
@@ -230,26 +185,13 @@ def run_setup():
 
 
 def _pick_hotspot_ssid(current_ssid: str) -> str:
-    """
-    Guide the user to turn on their hotspot, scan for networks,
-    and pick one from a numbered list.
-    """
-    print("\nTurn on your phone's Personal Hotspot now, then press Enter to scan.")
-    print("(Settings → Personal Hotspot → Allow Others to Join)\n")
-    input("  Press Enter when your hotspot is on… ")
-
-    print("\n  Scanning for networks", end="", flush=True)
-    for _ in range(3):
-        time.sleep(0.6)
-        print(".", end="", flush=True)
-
+    """Show saved Wi-Fi networks and let the user pick one."""
     networks = scan_wifi_networks()
-    print()  # newline after dots
 
     if networks:
-        print(f"\n  Found {len(networks)} network(s):\n")
+        print(f"\n  Your saved networks:\n")
         for i, ssid in enumerate(networks, 1):
-            marker = "  (current)" if ssid == current_ssid else ""
+            marker = "  ← current" if ssid == current_ssid else ""
             print(f"    {i:2}.  {ssid}{marker}")
         print()
 
@@ -263,8 +205,7 @@ def _pick_hotspot_ssid(current_ssid: str) -> str:
             elif raw:
                 return raw
     else:
-        print("\n  No networks found — hotspot may not be visible yet.")
-        print("  You can type the name manually:\n")
+        print("\n  No saved networks found. Type the hotspot name manually:\n")
         while True:
             name = input("  Hotspot name: ").strip()
             if name:
