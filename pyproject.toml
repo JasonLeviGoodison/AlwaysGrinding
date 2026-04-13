@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lid-guard"
+version = "0.1.0"
+description = "Keep your laptop awake on lid close while selected coding agents keep running."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Jason Levi Goodison" },
+]
+keywords = ["cli", "laptop", "sleep", "agents", "macos", "linux"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/JasonLeviGoodison/AlwaysGrinding"
+Repository = "https://github.com/JasonLeviGoodison/AlwaysGrinding"
+Issues = "https://github.com/JasonLeviGoodison/AlwaysGrinding/issues"
+
+[project.scripts]
+lid-guard = "lidguard.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
