@@ -31,6 +31,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_load_config_returns_defaults_when_missing(self) -> None:
         loaded = config.load_config()
+        self.assertFalse(loaded["configured"])
         self.assertEqual(loaded["watched_processes"], ["claude", "codex", "openclaw"])
         self.assertFalse(loaded["hotspot"]["enabled"])
 
@@ -61,25 +62,24 @@ class ConfigTests(unittest.TestCase):
     def test_save_config_normalizes_values(self) -> None:
         path = config.save_config(
             {
+                "configured": True,
                 "watched_processes": [" Codex ", "claude"],
                 "process_poll_interval_seconds": 4,
                 "lid_poll_interval_seconds": 0.5,
                 "hotspot": {
                     "enabled": True,
                     "ssid": "Phone",
-                    "force_on_network_loss": True,
-                    "internet_check_failures_before_force": 3,
                 },
             }
         )
 
         saved = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertTrue(saved["configured"])
         self.assertEqual(saved["watched_processes"], ["codex", "claude"])
         self.assertEqual(saved["hotspot"]["ssid"], "Phone")
-        self.assertEqual(saved["hotspot"]["internet_check_failures_before_force"], 3)
 
     def test_run_setup_updates_watched_processes(self) -> None:
-        answers = iter(["codex, aider", ""])
+        answers = iter(["codex, aider", "", ""])
         output: list[str] = []
 
         with mock.patch.object(config.sys, "platform", "linux"):
@@ -88,11 +88,12 @@ class ConfigTests(unittest.TestCase):
                 output_func=output.append,
             )
 
+        self.assertTrue(result["configured"])
         self.assertEqual(result["watched_processes"], ["codex", "aider"])
         self.assertIn("Saved settings", "\n".join(output))
 
     def test_run_setup_can_install_background_service(self) -> None:
-        answers = iter(["", "y"])
+        answers = iter(["", "", "y"])
         output: list[str] = []
         installer = mock.Mock(return_value=Path("/tmp/lid-guard.service"))
 
@@ -106,7 +107,6 @@ class ConfigTests(unittest.TestCase):
         installer.assert_called_once_with(True)
         self.assertIn("Installed background service", "\n".join(output))
 
-    def test_normalize_config_populates_hotspot_failover_defaults(self) -> None:
+    def test_normalize_config_keeps_hotspot_settings_minimal(self) -> None:
         normalized = config.normalize_config({"hotspot": {"enabled": True, "ssid": "Phone"}})
-        self.assertTrue(normalized["hotspot"]["force_on_network_loss"])
-        self.assertEqual(normalized["hotspot"]["internet_check_match"], "Success")
+        self.assertEqual(normalized["hotspot"], {"enabled": True, "ssid": "Phone"})

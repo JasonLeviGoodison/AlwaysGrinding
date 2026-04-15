@@ -125,8 +125,8 @@ def _write_wrapper_script() -> Path:
 def _launch_command() -> tuple[list[str], str | None]:
     entrypoint = Path(sys.argv[0]).resolve()
     if entrypoint.exists() and (entrypoint.suffix == ".pyz" or entrypoint.name == SERVICE_NAME):
-        return [sys.executable, str(entrypoint), "run"], None
-    return [sys.executable, "-m", "lidguard", "run"], _source_pythonpath()
+        return [str(entrypoint), "run"], None
+    return ["/usr/bin/env", "python3", "-m", "lidguard", "run"], _source_pythonpath()
 
 
 def _source_pythonpath() -> str | None:

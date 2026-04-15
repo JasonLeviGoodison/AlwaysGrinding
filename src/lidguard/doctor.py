@@ -143,14 +143,13 @@ def render_report() -> tuple[int, str]:
         "",
         f"Config file: {active_config_file()}",
         f"Data dir:    {data_dir()}",
+        f"Onboarding:  {'complete' if config.get('configured') else 'pending'}",
         f"Processes:   {', '.join(config['watched_processes'])}",
     ]
     if os.sys.platform == "darwin":
         hotspot = config["hotspot"]
         if hotspot["enabled"] and hotspot["ssid"]:
-            hotspot_status = hotspot["ssid"]
-            if hotspot.get("force_on_network_loss", True):
-                hotspot_status += " (failover enabled)"
+            hotspot_status = f"{hotspot['ssid']} (disconnect recovery only)"
         else:
             hotspot_status = "disabled"
         lines.append(f"Hotspot:     {hotspot_status}")

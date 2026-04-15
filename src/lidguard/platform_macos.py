@@ -5,15 +5,17 @@ import signal
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 
-from . import APP_NAME, __version__
 from .config import load_config
 from .process_watcher import ProcessWatcher
 
 log = logging.getLogger("lidguard.macos")
+HOTSPOT_CONNECT_TIMEOUT_SECONDS = 12.0
+HOTSPOT_DISCONNECT_CONFIRMATION_POLLS = 2
+HOTSPOT_POLL_INTERVAL_SECONDS = 1.0
+HOTSPOT_RETRY_COOLDOWN_SECONDS = 15.0
+HOTSPOT_SETTLE_SECONDS = 15.0
 
 
 def lock_screen() -> bool:
@@ -69,7 +71,7 @@ def connect_hotspot(ssid: str) -> bool:
             command,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=HOTSPOT_CONNECT_TIMEOUT_SECONDS,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -79,18 +81,18 @@ def connect_hotspot(ssid: str) -> bool:
         log.warning("Hotspot connection failed for %r: %s", ssid, exc)
         return False
 
-    if result.returncode == 0 or not result.stderr.strip():
-        log.info("Connected to hotspot %r via %s.", ssid, interface)
+    if result.returncode == 0:
+        log.info("Requested hotspot connection to %r via %s.", ssid, interface)
         return True
 
-    log.warning("Hotspot connection failed for %r: %s", ssid, result.stderr.strip())
+    detail = result.stderr.strip() or result.stdout.strip() or f"{command[0]} exited with status {result.returncode}"
+    log.warning("Hotspot connection failed for %r: %s", ssid, detail)
     return False
 
 
 def maybe_connect_hotspot(
     config: dict | None = None,
     reason: str = "manual request",
-    force_reconnect: bool = False,
 ) -> bool:
     current = config if config is not None else load_config()
     hotspot = current.get("hotspot", {})
@@ -99,12 +101,20 @@ def maybe_connect_hotspot(
 
     ssid = str(hotspot.get("ssid", "")).strip()
     if not ssid:
-        log.warning("Hotspot auto-connect is enabled but no SSID is configured.")
+        log.warning("Hotspot recovery is enabled but no SSID is configured.")
         return False
 
     current_ssid = current_wifi_ssid()
-    if current_ssid == ssid and not force_reconnect:
+    if current_ssid == ssid:
         log.info("Already connected to hotspot %r.", ssid)
+        return True
+    if current_ssid:
+        log.info("Already connected to Wi-Fi network %r. Leaving hotspot unchanged.", current_ssid)
+        return True
+
+    current_ip = current_ip_address()
+    if current_ip:
+        log.info("Wi-Fi already has IP %s. Leaving hotspot unchanged.", current_ip)
         return True
 
     log.info("Attempting hotspot connection to %r (%s).", ssid, reason)
@@ -116,7 +126,6 @@ class NetworkStatus:
     associated: bool
     ssid: str
     ip_address: str
-    internet_reachable: bool | None
 
 
 def current_wifi_ssid() -> str | None:
@@ -152,76 +161,26 @@ def current_ip_address() -> str | None:
         )
     except Exception as exc:
         log.debug("Could not read Wi-Fi IP address: %s", exc)
-        return None
+        result = None
 
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+    if result is not None and result.returncode == 0:
+        address = result.stdout.strip()
+        if address:
+            return address
 
-
-def internet_reachable(config: dict) -> bool:
-    hotspot = config.get("hotspot", {})
-    url = str(hotspot.get("internet_check_url", "")).strip()
-    if not url:
-        return True
-
-    timeout = float(hotspot.get("internet_check_timeout_seconds", 2.5))
-    expected = str(hotspot.get("internet_check_match", "")).strip()
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": f"{APP_NAME}/{__version__}"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            status = getattr(response, "status", 200)
-            body = response.read(256).decode("utf-8", errors="ignore")
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        log.debug("Internet reachability check failed: %s", exc)
-        return False
-    except Exception as exc:
-        log.debug("Unexpected reachability error: %s", exc)
-        return False
-
-    if status >= 400:
-        return False
-    if expected and expected not in body:
-        return False
-    return True
+    return _current_ip_address_via_ifconfig(interface)
 
 
 def current_network_status(config: dict) -> NetworkStatus:
     ssid = current_wifi_ssid() or ""
     ip_address = current_ip_address() or ""
-    associated = bool(ssid)
-    reachable: bool | None = None
-
-    hotspot = config.get("hotspot", {})
-    if associated and ip_address and hotspot.get("internet_check_enabled", True):
-        reachable = internet_reachable(config)
+    associated = bool(ssid or ip_address)
 
     return NetworkStatus(
         associated=associated,
         ssid=ssid,
         ip_address=ip_address,
-        internet_reachable=reachable,
     )
-
-
-def hotspot_failover_reason(
-    status: NetworkStatus,
-    target_ssid: str,
-    reachability_failures: int,
-    failure_threshold: int,
-) -> str | None:
-    if not status.associated:
-        return "Wi-Fi is disconnected"
-    if not status.ip_address:
-        return "Wi-Fi has no IP address"
-    if status.internet_reachable is False and reachability_failures >= failure_threshold:
-        if status.ssid == target_ssid:
-            return "hotspot reachability check failed"
-        return "internet reachability check failed"
-    return None
 
 
 def read_lid_state() -> bool | None:
@@ -291,7 +250,9 @@ class HotspotRecoveryMonitor:
         self._active = False
         self._lock = threading.Lock()
         self._last_attempt = 0.0
-        self._reachability_failures = 0
+        self._settle_until = 0.0
+        self._attempt_in_progress = False
+        self._disconnect_observations = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -313,17 +274,7 @@ class HotspotRecoveryMonitor:
         with self._lock:
             self._active = active
             if not active:
-                self._reachability_failures = 0
-
-    def check_now(self) -> None:
-        if not self._hotspot_enabled():
-            return
-        self._maybe_recover(bypass_cooldown=True)
-
-    def force_check(self, reason: str) -> None:
-        if not self._hotspot_enabled():
-            return
-        self._maybe_recover(reason=reason, bypass_cooldown=True)
+                self._disconnect_observations = 0
 
     def _poll_loop(self) -> None:
         if not self._recovery_enabled():
@@ -336,14 +287,16 @@ class HotspotRecoveryMonitor:
             self._maybe_recover()
             self._stop_event.wait(self._poll_interval())
 
-    def _maybe_recover(self, reason: str | None = None, bypass_cooldown: bool = False) -> None:
-        if reason is None and not self._recovery_enabled():
-            return
-        if reason is not None and not self._hotspot_enabled():
+    def _maybe_recover(self) -> None:
+        if not self._recovery_enabled():
             return
         with self._lock:
             active = self._active
+            settling = time.monotonic() < self._settle_until
+            attempt_in_progress = self._attempt_in_progress
         if not active:
+            return
+        if settling or attempt_in_progress:
             return
 
         target_ssid = str(self._hotspot.get("ssid", "")).strip()
@@ -351,51 +304,59 @@ class HotspotRecoveryMonitor:
             return
 
         status = current_network_status(self._config)
-        if status.internet_reachable is False:
-            self._reachability_failures += 1
-        else:
-            self._reachability_failures = 0
-
-        trigger = reason or hotspot_failover_reason(
-            status=status,
-            target_ssid=target_ssid,
-            reachability_failures=self._reachability_failures,
-            failure_threshold=self._failure_threshold(),
-        )
-        if not trigger:
+        if status.associated:
+            self._disconnect_observations = 0
+            return
+        self._disconnect_observations += 1
+        if self._disconnect_observations < self._disconnect_confirmation_threshold():
             return
 
         now = time.monotonic()
-        if not bypass_cooldown and now - self._last_attempt < self._reconnect_interval():
+        if now - self._last_attempt < self._reconnect_interval():
             return
 
-        if maybe_connect_hotspot(
-            self._config,
-            reason=trigger,
-            force_reconnect=status.ssid == target_ssid,
-        ):
-            self._last_attempt = now
-            self._reachability_failures = 0
-        else:
-            self._last_attempt = now
+        with self._lock:
+            if self._attempt_in_progress:
+                return
+            self._attempt_in_progress = True
+
+        success = False
+        try:
+            success = maybe_connect_hotspot(
+                self._config,
+                reason="Wi-Fi disconnected",
+            )
+        finally:
+            completed_at = time.monotonic()
+            with self._lock:
+                self._attempt_in_progress = False
+                self._last_attempt = completed_at
+                if success:
+                    self._settle_until = completed_at + self._settle_interval()
+                self._disconnect_observations = 0
 
     def _hotspot_enabled(self) -> bool:
         return bool(self._hotspot.get("enabled"))
 
     def _recovery_enabled(self) -> bool:
-        return bool(
-            self._hotspot_enabled()
-            and self._hotspot.get("force_on_network_loss", True)
-        )
+        return self._hotspot_enabled()
 
     def _poll_interval(self) -> float:
-        return float(self._hotspot.get("network_check_interval_seconds", 2.0))
+        return float(self._hotspot.get("network_check_interval_seconds", HOTSPOT_POLL_INTERVAL_SECONDS))
 
     def _reconnect_interval(self) -> float:
-        return float(self._hotspot.get("reconnect_interval_seconds", 5.0))
+        return float(self._hotspot.get("reconnect_interval_seconds", HOTSPOT_RETRY_COOLDOWN_SECONDS))
 
-    def _failure_threshold(self) -> int:
-        return int(self._hotspot.get("internet_check_failures_before_force", 2))
+    def _disconnect_confirmation_threshold(self) -> int:
+        return int(
+            self._hotspot.get(
+                "disconnect_confirmation_polls",
+                HOTSPOT_DISCONNECT_CONFIRMATION_POLLS,
+            )
+        )
+
+    def _settle_interval(self) -> float:
+        return max(self._reconnect_interval(), HOTSPOT_SETTLE_SECONDS)
 
 
 class LidMonitor:
@@ -464,7 +425,6 @@ class MacOSLidGuard:
     def _on_processes_active(self) -> None:
         self._caffeinate.start()
         self._hotspot_recovery.set_active(True)
-        self._hotspot_recovery.check_now()
 
     def _on_processes_idle(self) -> None:
         self._hotspot_recovery.set_active(False)
@@ -472,11 +432,7 @@ class MacOSLidGuard:
 
     def _handle_lid_close(self) -> None:
         if self._caffeinate.active:
-            if self._config.get("hotspot", {}).get("enabled"):
-                log.info("Lid closed while protection is active. Checking hotspot recovery and locking screen.")
-            else:
-                log.info("Lid closed while protection is active. Locking screen.")
-            self._hotspot_recovery.force_check("lid closed")
+            log.info("Lid closed while protection is active. Locking screen.")
             lock_screen()
         else:
             log.info("Lid closed with no watched process running. Allowing normal macOS behavior.")
@@ -531,3 +487,28 @@ def _wifi_interface() -> str:
                 if lines[offset].startswith("Device:"):
                     return lines[offset].split(":", 1)[1].strip()
     return "en0"
+
+
+def _current_ip_address_via_ifconfig(interface: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["ifconfig", interface],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception as exc:
+        log.debug("Could not read Wi-Fi IP address via ifconfig: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("inet "):
+            parts = stripped.split()
+            if len(parts) >= 2:
+                return parts[1]
+    return None

@@ -70,7 +70,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(service.service_file(), path)
             self.assertTrue(service.service_installed())
 
-    def test_launch_command_uses_current_interpreter_for_pyz(self) -> None:
+    def test_launch_command_runs_pyz_directly(self) -> None:
         archive = Path(self.temp_dir.name) / "lid-guard.pyz"
         archive.write_text("", encoding="utf-8")
 
@@ -81,5 +81,5 @@ class ServiceTests(unittest.TestCase):
         ):
             command, pythonpath = service._launch_command()
 
-        self.assertEqual(command, ["/opt/homebrew/bin/python3.11", str(archive.resolve()), "run"])
+        self.assertEqual(command, [str(archive.resolve()), "run"])
         self.assertIsNone(pythonpath)

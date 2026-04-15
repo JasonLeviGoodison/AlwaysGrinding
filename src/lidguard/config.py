@@ -11,25 +11,20 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import APP_NAME
+from .setup_ui import MenuOption, PromptSetupUI, TerminalSetupUI
 
 log = logging.getLogger("lidguard.config")
 
 DEFAULT_WATCHED_PROCESSES = ["claude", "codex", "openclaw"]
+COMMON_PROCESS_OPTIONS = ["codex", "claude", "openclaw", "aider", "cursor"]
 DEFAULT_CONFIG = {
+    "configured": False,
     "watched_processes": DEFAULT_WATCHED_PROCESSES,
     "process_poll_interval_seconds": 2.0,
     "lid_poll_interval_seconds": 0.3,
     "hotspot": {
         "enabled": False,
         "ssid": "",
-        "force_on_network_loss": True,
-        "network_check_interval_seconds": 2.0,
-        "reconnect_interval_seconds": 5.0,
-        "internet_check_enabled": True,
-        "internet_check_url": "https://captive.apple.com/hotspot-detect.html",
-        "internet_check_match": "Success",
-        "internet_check_timeout_seconds": 2.5,
-        "internet_check_failures_before_force": 2,
     },
 }
 
@@ -135,6 +130,12 @@ def normalize_config(raw: Any) -> dict[str, Any]:
 
     config = default_config()
 
+    configured = raw.get("configured")
+    if configured is not None:
+        if not isinstance(configured, bool):
+            raise ValueError("'configured' must be true or false")
+        config["configured"] = configured
+
     watched = raw.get("watched_processes")
     if watched is not None:
         if not isinstance(watched, list):
@@ -167,73 +168,9 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         ssid = hotspot.get("ssid", config["hotspot"]["ssid"])
         if not isinstance(ssid, str):
             raise ValueError("'hotspot.ssid' must be a string")
-        force_on_network_loss = hotspot.get(
-            "force_on_network_loss",
-            config["hotspot"]["force_on_network_loss"],
-        )
-        if not isinstance(force_on_network_loss, bool):
-            raise ValueError("'hotspot.force_on_network_loss' must be true or false")
-        network_check_interval_seconds = _positive_float(
-            hotspot.get(
-                "network_check_interval_seconds",
-                config["hotspot"]["network_check_interval_seconds"],
-            ),
-            "hotspot.network_check_interval_seconds",
-        )
-        reconnect_interval_seconds = _positive_float(
-            hotspot.get(
-                "reconnect_interval_seconds",
-                config["hotspot"]["reconnect_interval_seconds"],
-            ),
-            "hotspot.reconnect_interval_seconds",
-        )
-        internet_check_enabled = hotspot.get(
-            "internet_check_enabled",
-            config["hotspot"]["internet_check_enabled"],
-        )
-        if not isinstance(internet_check_enabled, bool):
-            raise ValueError("'hotspot.internet_check_enabled' must be true or false")
-        internet_check_url = hotspot.get(
-            "internet_check_url",
-            config["hotspot"]["internet_check_url"],
-        )
-        if not isinstance(internet_check_url, str):
-            raise ValueError("'hotspot.internet_check_url' must be a string")
-        internet_check_match = hotspot.get(
-            "internet_check_match",
-            config["hotspot"]["internet_check_match"],
-        )
-        if not isinstance(internet_check_match, str):
-            raise ValueError("'hotspot.internet_check_match' must be a string")
-        internet_check_timeout_seconds = _positive_float(
-            hotspot.get(
-                "internet_check_timeout_seconds",
-                config["hotspot"]["internet_check_timeout_seconds"],
-            ),
-            "hotspot.internet_check_timeout_seconds",
-        )
-        try:
-            failures_before_force = int(
-                hotspot.get(
-                    "internet_check_failures_before_force",
-                    config["hotspot"]["internet_check_failures_before_force"],
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise ValueError("'hotspot.internet_check_failures_before_force' must be a positive integer") from exc
-        if failures_before_force <= 0:
-            raise ValueError("'hotspot.internet_check_failures_before_force' must be a positive integer")
         config["hotspot"] = {
             "enabled": enabled,
             "ssid": ssid.strip(),
-            "force_on_network_loss": force_on_network_loss,
-            "network_check_interval_seconds": network_check_interval_seconds,
-            "reconnect_interval_seconds": reconnect_interval_seconds,
-            "internet_check_enabled": internet_check_enabled,
-            "internet_check_url": internet_check_url.strip(),
-            "internet_check_match": internet_check_match,
-            "internet_check_timeout_seconds": internet_check_timeout_seconds,
-            "internet_check_failures_before_force": failures_before_force,
         }
 
     return config
@@ -278,71 +215,32 @@ def run_setup(
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], None] = print,
     service_installer: Callable[[bool], Path] | None = None,
+    use_menu: bool | None = None,
 ) -> dict[str, Any]:
     config = load_config()
+    ui = _build_setup_ui(input_func, output_func, use_menu)
 
-    output_func("")
-    output_func("=== lid-guard setup ===")
-    output_func("")
-    output_func("Configure which processes keep your laptop awake on lid close.")
-    output_func("")
+    ui.message("")
+    ui.message("Configure when lid-guard should stay active and whether it should recover to a hotspot after a real Wi-Fi disconnect.")
 
-    current_processes = ", ".join(config["watched_processes"])
-    raw_processes = input_func(
-        f"Watched process names [{current_processes}]: "
-    ).strip()
-    if raw_processes:
-        config["watched_processes"] = parse_process_names(raw_processes)
-
+    config["watched_processes"] = _configure_watched_processes(config, ui)
     if sys.platform == "darwin":
-        output_func("")
-        output_func("Would you like to auto-connect to a hotspot on lid close?")
-        enabled = _prompt_bool(
-            "Enable hotspot auto-connect?",
-            config["hotspot"]["enabled"],
-            input_func=input_func,
-            output_func=output_func,
-        )
-        config["hotspot"]["enabled"] = enabled
-        if enabled:
-            config["hotspot"]["ssid"] = _pick_hotspot_ssid(
-                current_ssid=config["hotspot"].get("ssid", ""),
-                input_func=input_func,
-                output_func=output_func,
-            )
-            output_func("")
-            output_func("When protection is active, should lid-guard force the hotspot if Wi-Fi drops?")
-            config["hotspot"]["force_on_network_loss"] = _prompt_bool(
-                "Force hotspot on network loss?",
-                config["hotspot"]["force_on_network_loss"],
-                input_func=input_func,
-                output_func=output_func,
-            )
-            if config["hotspot"]["force_on_network_loss"]:
-                output_func("")
-                output_func("Should lid-guard verify internet access before failing over to the hotspot?")
-                config["hotspot"]["internet_check_enabled"] = _prompt_bool(
-                    "Use internet reachability checks?",
-                    config["hotspot"]["internet_check_enabled"],
-                    input_func=input_func,
-                    output_func=output_func,
-                )
+        _configure_hotspot(config, ui)
     else:
-        output_func("")
-        output_func("Hotspot setup is only available on macOS.")
+        ui.message("")
+        ui.message("Hotspot recovery is only available on macOS.")
 
+    config["configured"] = True
     path = save_config(config)
-    output_func("")
-    output_func(f"Saved settings to {path}")
+    ui.message("")
+    ui.message(f"Saved settings to {path}")
     installed_service = False
     if sys.platform in {"linux", "darwin"}:
-        output_func("")
-        output_func("Would you like lid-guard to keep running automatically in the background?")
-        install_background = _prompt_bool(
-            "Install background service?",
-            False,
-            input_func=input_func,
-            output_func=output_func,
+        install_background = ui.confirm(
+            "Install the background service now?",
+            default=False,
+            yes_label="Install service",
+            no_label="Not now",
         )
         if install_background:
             installer = service_installer
@@ -352,17 +250,22 @@ def run_setup(
             try:
                 service_path = installer(True)
             except RuntimeError as exc:
-                output_func(f"Could not install background service: {exc}")
+                ui.message(f"Could not install background service: {exc}")
             else:
                 installed_service = True
-                output_func(f"Installed background service: {service_path}")
+                ui.message(f"Installed background service: {service_path}")
 
     if not installed_service:
-        output_func("Start lid-guard with: lid-guard run")
+        ui.message("Start lid-guard with: lid-guard run")
         if sys.platform in {"linux", "darwin"}:
-            output_func("Optional: lid-guard service install")
-    output_func("")
+            ui.message("Optional: lid-guard service install")
+    ui.message("")
     return config
+
+
+def is_configured(config: dict[str, Any] | None = None) -> bool:
+    current = load_config() if config is None else config
+    return bool(current.get("configured"))
 
 
 def _normalize_process_name(value: Any) -> str:
@@ -400,56 +303,95 @@ def _wifi_interface() -> str:
     return "en0"
 
 
+def _build_setup_ui(
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], None],
+    use_menu: bool | None,
+):
+    if use_menu is True:
+        return TerminalSetupUI()
+    if use_menu is None and input_func is input and output_func is print and TerminalSetupUI.available():
+        return TerminalSetupUI()
+    return PromptSetupUI(input_func=input_func, output_func=output_func)
+
+
+def _configure_watched_processes(config: dict[str, Any], ui) -> list[str]:
+    ordered = _ordered_process_options(config["watched_processes"])
+    selected = ui.multi_select(
+        "Select the processes that should keep lid-guard active.",
+        [MenuOption(label=name, value=name) for name in ordered],
+        selected_values=config["watched_processes"],
+        min_selected=1,
+    )
+    extras = ui.text(
+        "Add any extra process names.",
+        "Extra process names (comma-separated, optional)",
+        allow_empty=True,
+    )
+    merged = list(selected)
+    if extras:
+        for name in parse_process_names(extras):
+            if name not in merged:
+                merged.append(name)
+    return merged
+
+
+def _configure_hotspot(config: dict[str, Any], ui) -> None:
+    enabled = ui.confirm(
+        "Reconnect to a hotspot only when Wi-Fi disconnects?",
+        default=config["hotspot"]["enabled"],
+        yes_label="Enable hotspot recovery",
+        no_label="Disable hotspot recovery",
+    )
+    config["hotspot"]["enabled"] = enabled
+    if not enabled:
+        config["hotspot"]["ssid"] = ""
+        return
+
+    config["hotspot"]["ssid"] = _pick_hotspot_ssid(
+        current_ssid=config["hotspot"].get("ssid", ""),
+        ui=ui,
+    )
+
+
+def _ordered_process_options(current: list[str]) -> list[str]:
+    ordered: list[str] = []
+    for name in [*current, *COMMON_PROCESS_OPTIONS]:
+        normalized = _normalize_process_name(name)
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+    return ordered
+
+
 def _pick_hotspot_ssid(
     current_ssid: str,
-    input_func: Callable[[str], str],
-    output_func: Callable[[str], None],
+    ui,
 ) -> str:
     networks = scan_wifi_networks()
-    if networks:
-        output_func("")
-        output_func("Saved Wi-Fi networks:")
-        for index, ssid in enumerate(networks, start=1):
-            marker = " (current)" if ssid == current_ssid else ""
-            output_func(f"  {index}. {ssid}{marker}")
-        output_func("")
-        while True:
-            raw = input_func("Pick a number or type a network name: ").strip()
-            if raw.isdigit():
-                choice = int(raw) - 1
-                if 0 <= choice < len(networks):
-                    return networks[choice]
-                output_func(f"Enter a number between 1 and {len(networks)}.")
-                continue
-            if raw:
-                return raw
+    ordered = [ssid for ssid in networks if ssid]
+    if current_ssid and current_ssid not in ordered:
+        ordered.insert(0, current_ssid)
+
+    if ordered:
+        options = [MenuOption(label=ssid, value=ssid) for ssid in ordered]
+        options.append(MenuOption(label="Enter SSID manually", value="__manual__"))
+        selected = ui.select(
+            "Choose the hotspot lid-guard should join after a real Wi-Fi disconnect.",
+            options,
+            default_index=max(0, ordered.index(current_ssid)) if current_ssid in ordered else 0,
+        )
+        if selected != "__manual__":
+            return str(selected)
     else:
-        output_func("")
-        output_func("No saved networks found.")
+        ui.message("")
+        ui.message("No saved Wi-Fi networks were found. Enter the hotspot SSID manually.")
 
-    while True:
-        manual = input_func("Hotspot SSID: ").strip()
-        if manual:
-            return manual
-        output_func("Enter a non-empty SSID.")
-
-
-def _prompt_bool(
-    prompt: str,
-    default: bool,
-    input_func: Callable[[str], str],
-    output_func: Callable[[str], None],
-) -> bool:
-    suffix = "Y/n" if default else "y/N"
-    while True:
-        answer = input_func(f"{prompt} [{suffix}]: ").strip().lower()
-        if not answer:
-            return default
-        if answer in {"y", "yes"}:
-            return True
-        if answer in {"n", "no"}:
-            return False
-        output_func("Please enter y or n.")
+    return ui.text(
+        "Enter the hotspot SSID.",
+        "Hotspot SSID",
+        default=current_ssid,
+        allow_empty=False,
+    )
 
 
 load = load_config

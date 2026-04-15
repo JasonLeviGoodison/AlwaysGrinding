@@ -31,5 +31,6 @@ echo
 echo "Next steps:"
 echo "  1. Ensure $BIN_DIR is on your PATH"
 echo "  2. Run: lid-guard doctor"
-echo "  3. Optional: lid-guard setup"
+echo "  3. Run: lid-guard run"
+echo "     First run starts the interactive onboarding menu."
 echo "  4. Optional: lid-guard service install"

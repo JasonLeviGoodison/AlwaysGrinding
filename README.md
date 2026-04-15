@@ -22,8 +22,7 @@ On macOS:
 
 - starts `caffeinate` while watched processes are active
 - locks the screen on lid close
-- can reconnect to a configured hotspot
-- can keep checking connectivity and force the hotspot if Wi‑Fi drops or internet checks fail
+- can reconnect to a configured hotspot after a confirmed Wi-Fi disconnect
 
 On Linux:
 
@@ -71,17 +70,18 @@ python3 run.py run
 
 ```bash
 lid-guard doctor
-lid-guard setup
 lid-guard run
 ```
 
-`lid-guard setup` can also offer to install the background service for you.
+On first run, `lid-guard` forces onboarding before it starts protecting the laptop. In a normal terminal, setup uses an arrow-key menu and Enter to confirm selections.
 
 Install a background service directly:
 
 ```bash
 lid-guard service install
 ```
+
+`lid-guard service install` also requires onboarding to be complete first.
 
 ## Commands
 
@@ -108,11 +108,12 @@ Configuration is stored in:
 
 Config includes:
 
+- whether onboarding has been completed
 - watched process names
 - process polling interval
 - lid polling interval
 - hotspot SSID on macOS
-- hotspot failover behavior on macOS
+- whether hotspot recovery is enabled on macOS
 
 Run the setup wizard to populate it:
 
@@ -123,6 +124,7 @@ lid-guard setup
 ## macOS Hotspot Notes
 
 `lid-guard` can tell macOS to join a configured hotspot, but Apple still controls Instant Hotspot availability.
+The current behavior is intentionally narrow: it only tries to rejoin the configured hotspot after a confirmed Wi-Fi disconnect, and it avoids switching networks while you are still associated to any Wi-Fi network.
 
 For the best results:
 

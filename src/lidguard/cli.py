@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from . import __version__
-from .config import load_config, parse_process_names, run_setup
+from .config import is_configured, load_config, parse_process_names, run_setup
 from .doctor import render_report
 from .logging_utils import configure_logging
 from .service import install_service, uninstall_service
@@ -99,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    config = load_config()
+    config = _load_runtime_config(allow_setup=True)
 
     if args.watch_processes:
         config["watched_processes"] = parse_process_names(",".join(args.watch_processes))
@@ -135,6 +135,7 @@ def _doctor_command(_args: argparse.Namespace) -> int:
 
 
 def _service_install_command(args: argparse.Namespace) -> int:
+    _load_runtime_config(allow_setup=True)
     path = install_service(enable=not args.write_only)
     print(path)
     return 0
@@ -145,3 +146,23 @@ def _service_uninstall_command(args: argparse.Namespace) -> int:
     for path in removed:
         print(path)
     return 0
+
+
+def _load_runtime_config(allow_setup: bool) -> dict:
+    config = load_config()
+    if is_configured(config):
+        return config
+
+    interactive = bool(
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
+    if allow_setup and interactive:
+        print("No lid-guard setup found. Starting onboarding.")
+        run_setup()
+        refreshed = load_config()
+        if is_configured(refreshed):
+            return refreshed
+        raise RuntimeError("lid-guard setup did not complete successfully")
+
+    raise RuntimeError("lid-guard is not configured yet. Run: lid-guard setup")
